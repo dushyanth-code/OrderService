@@ -2,16 +2,16 @@
 
 .NET Core 8.0 microservice implementing Domain-Driven Design (DDD) with CQRS, MediatR, Repository Pattern, and Domain Events for Order Management.
 
-## ??? Architecture
+## Architecture
 
 This project follows Clean Architecture principles with clear separation of concerns:
 
 ```
 OrderService/
-??? OrderService.Domain/         # Core business logic (no dependencies)
-??? OrderService.Application/    # Use cases, commands, queries
-??? OrderService.Infrastructure/ # Data access, EF Core, repositories
-??? OrderService.API/           # REST API endpoints, Swagger
+ OrderService.Domain/         # Core business logic (no dependencies)
+ OrderService.Application/    # Use cases, commands, queries
+ OrderService.Infrastructure/ # Data access, EF Core, repositories
+ OrderService.API/           # REST API endpoints, Swagger
 ```
 
 ### Key Patterns Implemented
@@ -24,7 +24,7 @@ OrderService/
 - **MediatR**: Command/Query/Event handlers
 - **Pipeline Behaviors**: Cross-cutting concerns (logging, validation)
 
-## ?? Features
+##  Features
 
 ### Domain Model
 
@@ -45,7 +45,7 @@ OrderService/
 | PUT | `/api/orders/{id}/cancel` | Cancel an order |
 | PUT | `/api/orders/{id}/ship` | Ship an order |
 
-## ?? Getting Started
+##  Getting Started
 
 ### Prerequisites
 
@@ -84,7 +84,7 @@ OrderService/
    ```
    (Replace xxx with the actual port shown in the console)
 
-## ?? Usage Examples
+##  Usage Examples
 
 ### Create an Order
 
@@ -147,7 +147,7 @@ Content-Type: application/json
 }
 ```
 
-## ??? Project Structure Details
+##  Project Structure Details
 
 ### Domain Layer (`OrderService.Domain`)
 
@@ -188,7 +188,7 @@ Content-Type: application/json
 - Exception handling middleware
 - CORS configuration
 
-## ?? Configuration
+## Configuration
 
 ### Database Options
 
@@ -225,7 +225,7 @@ Logging is configured in `appsettings.json`:
 }
 ```
 
-## ?? Domain Events
+## Domain Events
 
 Domain events are automatically dispatched after successful persistence:
 
@@ -236,7 +236,7 @@ Domain events are automatically dispatched after successful persistence:
 
 Event handlers are registered in MediatR and executed asynchronously.
 
-## ?? Business Rules
+## Business Rules
 
 ### Order Creation
 - Must have at least one item
@@ -253,7 +253,7 @@ Event handlers are registered in MediatR and executed asynchronously.
 - Can only ship orders in "Confirmed" status
 - Tracking number is required
 
-## ?? Testing
+## Testing
 
 ### Manual Testing with Swagger
 
@@ -268,7 +268,7 @@ Event handlers are registered in MediatR and executed asynchronously.
 3. **Confirm Order** - PUT `/api/orders/{id}/confirm`
 4. **Ship Order** - PUT `/api/orders/{id}/ship`
 
-## ?? NuGet Packages
+## NuGet Packages
 
 ### Domain
 - No external dependencies (pure C#)
@@ -286,7 +286,7 @@ Event handlers are registered in MediatR and executed asynchronously.
 - `Swashbuckle.AspNetCore` - Swagger/OpenAPI
 - `Microsoft.EntityFrameworkCore.Design` - EF Core tools
 
-## ??? Development Guidelines
+## Development Guidelines
 
 ### Adding New Commands
 
@@ -306,7 +306,7 @@ Event handlers are registered in MediatR and executed asynchronously.
 3. Create handler in `Application/EventHandlers/` implementing `INotificationHandler<TEvent>`
 4. Register handler in `Program.cs`
 
-## ?? Error Handling
+## Error Handling
 
 The API returns standardized Problem Details for errors:
 
@@ -323,7 +323,7 @@ Example error response:
 }
 ```
 
-## ?? Monitoring and Logging
+## Monitoring and Logging
 
 All operations are logged using `ILogger`:
 - Command/Query execution
@@ -332,7 +332,7 @@ All operations are logged using `ILogger`:
 
 Check console output or configure logging providers (Serilog, Application Insights, etc.)
 
-## ?? Deployment
+## Deployment
 
 ### Docker (Optional)
 
@@ -363,25 +363,25 @@ COPY --from=publish /app/publish .
 ENTRYPOINT ["dotnet", "OrderService.API.dll"]
 ```
 
-## ?? Resources
+## Resources
 
 - [Domain-Driven Design](https://martinfowler.com/bliki/DomainDrivenDesign.html)
 - [CQRS Pattern](https://martinfowler.com/bliki/CQRS.html)
 - [MediatR Documentation](https://github.com/jbogard/MediatR)
 - [Clean Architecture](https://blog.cleancoder.com/uncle-bob/2012/08/13/the-clean-architecture.html)
 
-## ?? License
+## License
 
 This project is provided as a sample implementation for educational purposes.
 
-## ?? Contributing
+## Contributing
 
 This is a demonstration project showcasing DDD best practices. Feel free to use it as a template for your own projects.
 
-## ?? Support
+## Support
 
 For questions or issues, please refer to the inline code documentation and XML comments.
 
 ---
 
-**Built with ?? using ASP.NET Core 8.0, Domain-Driven Design, and CQRS**
+**Built with using ASP.NET Core 8.0, Domain-Driven Design, and CQRS**

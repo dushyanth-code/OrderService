@@ -1,6 +1,6 @@
-# Order Service - DDD Microservice with CQRS
+﻿# Order Service - DDD Microservice with CQRS
 
-.NET Core 8.0 microservice implementing Domain-Driven Design (DDD) with CQRS, MediatR, Repository Pattern, and Domain Events for Order Management.
+.NET Core 8.0 microservice implementing Domain-Driven Design (DDD) with CQRS, MediatR, Repository Pattern, Domain Events, and Transactional Outbox Pattern for Order Management.
 
 ## Architecture
 
@@ -21,10 +21,11 @@ OrderService/
 - **Repository Pattern**: Abstract data access
 - **Unit of Work**: Transaction management
 - **Domain Events**: Event-driven architecture within the domain
+- **Transactional Outbox Pattern**: Reliable event publishing
 - **MediatR**: Command/Query/Event handlers
 - **Pipeline Behaviors**: Cross-cutting concerns (logging, validation)
 
-##  Features
+## ✨ Features
 
 ### Domain Model
 
@@ -34,6 +35,167 @@ OrderService/
 - **Domain Events**: OrderPlaced, OrderConfirmed, OrderShipped, OrderCancelled
 - **Business Rules**: Enforced within the domain model
 
+### Transactional Outbox Pattern
+
+The service implements the **Transactional Outbox Pattern** to ensure reliable event publishing and maintain data consistency across distributed systems.
+
+#### How It Works
+
+1. **Domain Events Raised**: When business operations occur (e.g., order placed), domain events are added to the aggregate root
+2. **Transactional Storage**: Events are persisted to the `OutboxMessages` table in the same database transaction as the business data
+3. **Background Processing**: A background service (`OutboxProcessorService`) continuously polls and processes unprocessed events
+4. **Event Publishing**: Events are published to external message brokers (RabbitMQ, Kafka, Azure Service Bus, etc.)
+5. **Guaranteed Delivery**: Implements retry logic (max 3 attempts) with automatic failure handling
+
+#### Outbox Message Structure
+
+```csharp
+public class OutboxMessage
+{
+    public Guid Id { get; set; }
+    public Guid AggregateId { get; set; }          // Order ID
+    public string EventType { get; set; }          // Event type name
+    public string EventData { get; set; }          // Serialized JSON payload
+    public DateTime CreatedAt { get; set; }        // When event was created
+    public DateTime? ProcessedAt { get; set; }     // When successfully published
+    public bool IsProcessed { get; set; }          // Processing status
+    public int RetryCount { get; set; }            // Number of retry attempts
+    public string? Error { get; set; }             // Last error message
+}
+```
+
+### Background Service - OutboxProcessorService
+
+The **OutboxProcessorService** is a hosted background service that runs continuously alongside the API to ensure reliable event delivery.
+
+#### Service Configuration
+
+```csharp
+public class OutboxProcessorService : BackgroundService
+{
+    private readonly TimeSpan _processingInterval = TimeSpan.FromSeconds(5);
+    private const int MaxRetryCount = 3;
+    
+    // Processes up to 10 messages per batch
+    private const int BatchSize = 10;
+}
+```
+
+#### Key Features
+
+**1. Continuous Polling**
+- Runs as an `IHostedService` in the background
+- Polls the `OutboxMessages` table every **5 seconds**
+- Does not block API request processing
+
+**2. Batch Processing**
+- Processes up to **10 unprocessed events** per batch
+- Orders events by creation time (FIFO - First In, First Out)
+- Efficient database queries with filtering on `IsProcessed` and `RetryCount`
+
+**3. Retry Logic**
+- Maximum **3 retry attempts** for failed events
+- Events exceeding max retries are marked as failed
+- Error messages are logged for troubleshooting
+
+**4. Transactional Safety**
+- Each batch is processed in a separate service scope
+- Database context per batch ensures proper transaction isolation
+- Successful processing updates are persisted immediately
+
+**5. Comprehensive Logging**
+- Logs service start/stop events
+- Logs batch processing information (count, event types)
+- Logs individual event success/failure with details
+- Logs retry attempts with error context
+
+
+#### Service Lifecycle
+
+**Startup**
+```csharp
+// Registered in Program.cs
+builder.Services.AddHostedService<OutboxProcessorService>();
+
+// Automatically starts when application starts
+_logger.LogInformation("Outbox Processor Service started");
+```
+
+**Runtime**
+- Continuously processes events while application is running
+- Gracefully handles exceptions without crashing
+- Respects cancellation tokens for clean shutdown
+
+**Shutdown**
+- Stops processing when application stops
+- Completes current batch before shutting down
+- Logs shutdown event
+
+#### Integration with Message Brokers
+
+The service uses the `IOutboxEventPublisher` interface for publishing events:
+
+```csharp
+public interface IOutboxEventPublisher
+{
+    Task PublishAsync(string eventType, string eventData, CancellationToken cancellationToken);
+}
+```
+
+**Current Implementation**: Stub implementation (events marked as processed but not published to actual broker)
+
+**Production Implementation**: Replace with actual message broker client
+
+```csharp
+// Example: RabbitMQ Integration
+public class RabbitMQEventPublisher : IOutboxEventPublisher
+{
+    private readonly IConnection _connection;
+    
+    public async Task PublishAsync(string eventType, string eventData, CancellationToken cancellationToken)
+    {
+        using var channel = _connection.CreateModel();
+        
+        var properties = channel.CreateBasicProperties();
+        properties.ContentType = "application/json";
+        properties.Type = eventType;
+        
+        var body = Encoding.UTF8.GetBytes(eventData);
+        
+        channel.BasicPublish(
+            exchange: "orders",
+            routingKey: eventType,
+            basicProperties: properties,
+            body: body
+        );
+        
+        await Task.CompletedTask;
+    }
+}
+```
+
+#### Monitoring & Troubleshooting
+
+**Log Messages to Monitor**:
+```
+[Information] Outbox Processor Service started
+[Information] Processing 5 outbox messages
+[Debug] Publishing event OrderPlacedDomainEvent for aggregate {id}
+[Debug] Successfully published event OrderPlacedDomainEvent for aggregate {id}
+[Information] Processed 5 outbox messages
+[Error] Failed to publish event OrderPlacedDomainEvent for aggregate {id}. Retry count: 1
+```
+
+**Health Checks**:
+- Monitor outbox table size: Large number of unprocessed events indicates publishing issues
+- Check retry counts: Events with high retry counts need investigation
+- Review error messages: Identify patterns in failures
+
+**Common Issues**:
+- **Message broker unavailable**: Events will accumulate and retry automatically
+- **Serialization errors**: Check event data format and schema
+- **Max retries exceeded**: Manual intervention required for dead-letter events
+
 ### API Endpoints
 
 | Method | Endpoint | Description |
@@ -41,219 +203,115 @@ OrderService/
 | POST | `/api/orders` | Create a new order |
 | GET | `/api/orders/{id}` | Get order by ID |
 | GET | `/api/orders/customer/{customerId}` | Get orders by customer |
+| GET | `/api/orders/{id}/events` | Get order outbox events |
 | PUT | `/api/orders/{id}/confirm` | Confirm an order |
 | PUT | `/api/orders/{id}/cancel` | Cancel an order |
 | PUT | `/api/orders/{id}/ship` | Ship an order |
 
-##  Getting Started
+## 🔄 Domain Events & Background Processing
 
-### Prerequisites
+### Event Lifecycle with Outbox Pattern
 
-- .NET 8.0 SDK or later
-- Visual Studio 2022 or VS Code
-- (Optional) SQL Server for production use
+```
+API Request ──> Command Handler ──> Aggregate
+                                       │
+                                       ├─> Raise Domain Event
+                                       │
+                                       ▼
+                                  Unit of Work
+                                       │
+                                       ├─> Save Order (Transaction Start)
+                                       ├─> Save OutboxMessage (Same Transaction)
+                                       │
+                                       ▼
+                                  Transaction Commit ✓
+                                       │
+                                       ▼
+                            [Event Safely Stored]
+                                       │
+        ┌──────────────────────────────┘
+        │
+        ▼
+OutboxProcessorService (Background)
+        │
+        ├─> Query Unprocessed Events
+        ├─> Publish to Message Broker
+        └─> Mark as Processed
+```
 
-### Installation
+### Domain Events
 
-1. **Clone the repository**
-   ```bash
-   cd OrderService
-   ```
+Domain events are automatically stored in the outbox table during the same database transaction:
 
-2. **Restore NuGet packages**
-   ```bash
-   dotnet restore
-   ```
-
-3. **Build the solution**
-   ```bash
-   dotnet build
-   ```
-
-4. **Run the API**
-   ```bash
-   cd OrderService.API
-   dotnet run
-   ```
-
-5. **Access Swagger UI**
+1. **OrderPlacedDomainEvent**: When an order is created
+   - Contains: OrderId, CustomerId, TotalAmount
    
-   Open your browser and navigate to:
-   ```
-   https://localhost:7xxx/swagger
-   ```
-   (Replace xxx with the actual port shown in the console)
+2. **OrderConfirmedDomainEvent**: When an order is confirmed
+   - Contains: OrderId, ConfirmationTimestamp
+   
+3. **OrderShippedDomainEvent**: When an order is shipped
+   - Contains: OrderId, TrackingNumber
+   
+4. **OrderCancelledDomainEvent**: When an order is cancelled
+   - Contains: OrderId, Reason
 
-##  Usage Examples
+Event handlers in the Application layer write these events to the outbox table, ensuring reliable delivery to external systems.
 
-### Create an Order
+### Monitoring Outbox Events
+
+Check the status of events for any order:
 
 ```bash
-POST /api/orders
-Content-Type: application/json
+GET /api/orders/{orderId}/events
+```
 
-{
-  "customerId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-  "shippingAddress": {
-    "street": "123 Main St",
-    "city": "New York",
-    "state": "NY",
-    "zipCode": "10001",
-    "country": "USA"
+**Response Example**:
+```json
+[
+  {
+    "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+    "eventType": "OrderPlacedDomainEvent",
+    "createdAt": "2024-02-01T10:30:00Z",
+    "processedAt": "2024-02-01T10:30:05Z",
+    "isProcessed": true,
+    "retryCount": 0,
+    "error": null
   },
-  "items": [
-    {
-      "productId": "7fa85f64-5717-4562-b3fc-2c963f66afa6",
-      "productName": "Product A",
-      "unitPrice": 29.99,
-      "currency": "USD",
-      "quantity": 2
-    }
-  ]
-}
+  {
+    "id": "4fa85f64-5717-4562-b3fc-2c963f66afa7",
+    "eventType": "OrderConfirmedDomainEvent",
+    "createdAt": "2024-02-01T10:35:00Z",
+    "processedAt": "2024-02-01T10:35:05Z",
+    "isProcessed": true,
+    "retryCount": 0,
+    "error": null
+  }
+]
 ```
-
-### Get Order by ID
-
-```bash
-GET /api/orders/{orderId}
-```
-
-### Confirm an Order
-
-```bash
-PUT /api/orders/{orderId}/confirm
-```
-
-### Cancel an Order
-
-```bash
-PUT /api/orders/{orderId}/cancel
-Content-Type: application/json
-
-{
-  "reason": "Customer requested cancellation"
-}
-```
-
-### Ship an Order
-
-```bash
-PUT /api/orders/{orderId}/ship
-Content-Type: application/json
-
-{
-  "trackingNumber": "1Z999AA10123456784"
-}
-```
-
-##  Project Structure Details
-
-### Domain Layer (`OrderService.Domain`)
-
-**Pure domain logic with no external dependencies**
-
-- `Common/`: Base classes (Entity, AggregateRoot, ValueObject)
-- `Aggregates/`: Order aggregate root
-- `Entities/`: OrderItem entity
-- `ValueObjects/`: Money, Address, OrderStatus
-- `Events/`: Domain event definitions
-- `Exceptions/`: Domain-specific exceptions
-- `Repositories/`: Repository interfaces
-
-### Application Layer (`OrderService.Application`)
-
-**Use cases and application logic**
-
-- `Commands/`: Create, Confirm, Cancel, Ship order commands and handlers
-- `Queries/`: Get order by ID, Get orders by customer
-- `DTOs/`: Data transfer objects for API
-- `EventHandlers/`: Domain event handlers
-- `Behaviors/`: MediatR pipeline behaviors (logging, validation)
-
-### Infrastructure Layer (`OrderService.Infrastructure`)
-
-**Technical implementations**
-
-- `Persistence/`: EF Core DbContext and configurations
-- `Repositories/`: Repository and Unit of Work implementations
-- **Domain Event Dispatching**: Events dispatched after successful SaveChanges
-
-### API Layer (`OrderService.API`)
-
-**REST API and configuration**
-
-- `Controllers/`: REST endpoints
-- `Program.cs`: Dependency injection, middleware, Swagger
-- Exception handling middleware
-- CORS configuration
 
 ## Configuration
 
-### Database Options
+### Background Service Configuration
 
-**Development (In-Memory)**
-The project uses EF Core In-Memory database by default for easy development.
+Modify polling interval and retry settings in `OutboxProcessorService.cs`:
 
-**Production (SQL Server)**
-Update `appsettings.json`:
-```json
-{
-  "ConnectionStrings": {
-    "OrderServiceDb": "Server=.;Database=OrderServiceDb;Trusted_Connection=True;"
-  }
-}
-```
-
-And modify `Program.cs`:
 ```csharp
-builder.Services.AddDbContext<OrderDbContext>(options =>
-    options.UseSqlServer(builder.Configuration.GetConnectionString("OrderServiceDb")));
+// Adjust processing frequency
+private readonly TimeSpan _processingInterval = TimeSpan.FromSeconds(5);
+
+// Change maximum retry attempts
+private const int MaxRetryCount = 3;
+
+// Modify batch size
+.Take(10)  // Process 10 messages per batch
 ```
 
-### Logging
+**Production Recommendations**:
+- **High Volume Systems**: Reduce interval to 1-2 seconds, increase batch size
+- **Low Volume Systems**: Increase interval to 10-30 seconds to reduce database load
+- **Critical Systems**: Lower max retry count, implement dead-letter queue
 
-Logging is configured in `appsettings.json`:
-```json
-{
-  "Logging": {
-    "LogLevel": {
-      "Default": "Information",
-      "OrderService": "Debug"
-    }
-  }
-}
-```
-
-## Domain Events
-
-Domain events are automatically dispatched after successful persistence:
-
-1. **OrderPlacedDomainEvent**: When an order is created
-2. **OrderConfirmedDomainEvent**: When an order is confirmed
-3. **OrderShippedDomainEvent**: When an order is shipped
-4. **OrderCancelledDomainEvent**: When an order is cancelled
-
-Event handlers are registered in MediatR and executed asynchronously.
-
-## Business Rules
-
-### Order Creation
-- Must have at least one item
-- Customer ID and shipping address are required
-
-### Order Confirmation
-- Can only confirm orders in "Pending" status
-
-### Order Cancellation
-- Cannot cancel orders that are "Shipped" or "Delivered"
-- Cancellation reason is required
-
-### Order Shipping
-- Can only ship orders in "Confirmed" status
-- Tracking number is required
-
-## Testing
+## 🧪 Testing
 
 ### Manual Testing with Swagger
 
@@ -261,30 +319,37 @@ Event handlers are registered in MediatR and executed asynchronously.
 2. Navigate to Swagger UI
 3. Use the interactive interface to test all endpoints
 
-### Testing Workflow
+### Testing Workflow with Outbox Pattern
 
 1. **Create an Order** - POST `/api/orders`
-2. **Verify Order** - GET `/api/orders/{id}`
-3. **Confirm Order** - PUT `/api/orders/{id}/confirm`
-4. **Ship Order** - PUT `/api/orders/{id}/ship`
+2. **Immediately Check Events** - GET `/api/orders/{id}/events`
+   - Should show `isProcessed: false`
+3. **Wait 5-10 Seconds** (for background processor)
+4. **Check Events Again** - GET `/api/orders/{id}/events`
+   - Should show `isProcessed: true` with `processedAt` timestamp
+5. **Confirm Order** - PUT `/api/orders/{id}/confirm`
+6. **Verify New Event** - GET `/api/orders/{id}/events`
+   - Should show both OrderPlaced and OrderConfirmed events
 
-## NuGet Packages
+### Testing Background Service
 
-### Domain
-- No external dependencies (pure C#)
+**Monitor Logs**:
+```bash
+dotnet run --project OrderService.API
 
-### Application
-- `MediatR` - Command/Query/Event handling
+# Look for these log entries:
+[Information] Outbox Processor Service started
+[Information] Processing {Count} outbox messages
+[Information] Processed {Count} outbox messages
+```
 
-### Infrastructure
-- `Microsoft.EntityFrameworkCore` - ORM
-- `Microsoft.EntityFrameworkCore.SqlServer` - SQL Server provider
-- `Microsoft.EntityFrameworkCore.InMemory` - In-memory provider
-- `MediatR` - Event dispatching
-
-### API
-- `Swashbuckle.AspNetCore` - Swagger/OpenAPI
-- `Microsoft.EntityFrameworkCore.Design` - EF Core tools
+**Simulate Failure**:
+1. Temporarily break the `IOutboxEventPublisher` implementation
+2. Create an order
+3. Watch logs show retry attempts
+4. Event should have `retryCount` incremented
+5. Fix the publisher
+6. Event should be processed on next attempt
 
 ## Development Guidelines
 
@@ -304,84 +369,54 @@ Event handlers are registered in MediatR and executed asynchronously.
 1. Define event in `Domain/Events/` implementing `IDomainEvent`
 2. Raise event in aggregate using `AddDomainEvent()`
 3. Create handler in `Application/EventHandlers/` implementing `INotificationHandler<TEvent>`
-4. Register handler in `Program.cs`
+4. Handler should save event to outbox via domain event handler
+5. Register handler in `Program.cs`
+6. Background service will automatically pick up and process the event
 
-## Error Handling
+### Implementing Production Message Broker
 
-The API returns standardized Problem Details for errors:
+Replace the stub `OutboxEventPublisher` with your message broker client:
 
-- **400 Bad Request**: Validation errors, business rule violations
-- **404 Not Found**: Resource not found
-- **500 Internal Server Error**: Unexpected errors
+```csharp
+// 1. Install NuGet package (e.g., RabbitMQ.Client)
+// 2. Implement IOutboxEventPublisher
+// 3. Register in Program.cs
+builder.Services.AddScoped<IOutboxEventPublisher, RabbitMQEventPublisher>();
 
-Example error response:
-```json
+// 4. Configure connection settings in appsettings.json
 {
-  "title": "Domain Validation Error",
-  "status": 400,
-  "detail": "Cannot confirm an order in Shipped status"
+  "MessageBroker": {
+    "Host": "localhost",
+    "Port": 5672,
+    "Username": "guest",
+    "Password": "guest"
+  }
 }
 ```
 
-## Monitoring and Logging
+## 📊 Monitoring & Observability
 
-All operations are logged using `ILogger`:
-- Command/Query execution
-- Domain events raised and handled
-- Errors and exceptions
+### Key Metrics
 
-Check console output or configure logging providers (Serilog, Application Insights, etc.)
+**Outbox Health**:
+- Unprocessed message count: `SELECT COUNT(*) FROM OutboxMessages WHERE IsProcessed = false`
+- Failed messages: `SELECT COUNT(*) FROM OutboxMessages WHERE RetryCount >= 3`
+- Processing lag: Average time between `CreatedAt` and `ProcessedAt`
 
-## Deployment
+**Background Service**:
+- Processing rate: Events processed per minute
+- Success rate: Percentage of successful first-attempt publishes
+- Retry rate: Percentage of events requiring retries
 
-### Docker (Optional)
+### Alerting Recommendations
 
-Create a `Dockerfile` in the API project:
-
-```dockerfile
-FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base
-WORKDIR /app
-EXPOSE 80
-
-FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
-WORKDIR /src
-COPY ["OrderService.API/OrderService.API.csproj", "OrderService.API/"]
-COPY ["OrderService.Application/OrderService.Application.csproj", "OrderService.Application/"]
-COPY ["OrderService.Infrastructure/OrderService.Infrastructure.csproj", "OrderService.Infrastructure/"]
-COPY ["OrderService.Domain/OrderService.Domain.csproj", "OrderService.Domain/"]
-RUN dotnet restore "OrderService.API/OrderService.API.csproj"
-COPY . .
-WORKDIR "/src/OrderService.API"
-RUN dotnet build "OrderService.API.csproj" -c Release -o /app/build
-
-FROM build AS publish
-RUN dotnet publish "OrderService.API.csproj" -c Release -o /app/publish
-
-FROM base AS final
-WORKDIR /app
-COPY --from=publish /app/publish .
-ENTRYPOINT ["dotnet", "OrderService.API.dll"]
-```
-
-## Resources
-
-- [Domain-Driven Design](https://martinfowler.com/bliki/DomainDrivenDesign.html)
-- [CQRS Pattern](https://martinfowler.com/bliki/CQRS.html)
-- [MediatR Documentation](https://github.com/jbogard/MediatR)
-- [Clean Architecture](https://blog.cleancoder.com/uncle-bob/2012/08/13/the-clean-architecture.html)
-
-## License
-
-This project is provided as a sample implementation for educational purposes.
-
-## Contributing
-
-This is a demonstration project showcasing DDD best practices. Feel free to use it as a template for your own projects.
-
-## Support
-
-For questions or issues, please refer to the inline code documentation and XML comments.
+- ⚠️ **Alert** if unprocessed message count > 100
+- 🚨 **Critical** if unprocessed messages older than 5 minutes
+- ⚠️ **Alert** if failed message count > 10
+- 🚨 **Critical** if background service stops running
 
 ---
 
-**Built with using ASP.NET Core 8.0, Domain-Driven Design, and CQRS**
+**Built with  ASP.NET Core 8.0, Domain-Driven Design, CQRS, and Transactional Outbox Pattern**
+
+**Author**: Dushyanth - Order Service Team (orderservice@example.com)
